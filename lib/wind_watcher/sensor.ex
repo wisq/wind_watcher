@@ -2,8 +2,10 @@ defmodule WindWatcher.Sensor do
   use GenServer
   require Logger
 
-  # Check sensor status every minute (if no signals received).
-  @interval 60_000
+  # Check sensor status at least once every 10 seconds.
+  # This allows you to set the `window_seconds` parameter
+  # quite low on Homebridge, for rapid response.
+  @interval 10_000
 
   defmodule State do
     alias State
@@ -14,7 +16,8 @@ defmodule WindWatcher.Sensor do
       min_clear: nil,
       keepalive: nil,
       last_time: nil,
-      clear_time: nil
+      clear_time: nil,
+      last_report: :no_data
     )
 
     # Minimum time (in milliseconds) we must receive an "all clear" signal
@@ -78,22 +81,33 @@ defmodule WindWatcher.Sensor do
 
       case [is_alive?(state, now), is_clear?(state, now)] do
         [false, _] ->
-          Logger.info("Sensor state: no data (alarm).")
-          :alarm
+          report(state, :alarm, :no_data, "no data (alarm)")
 
         [true, false] ->
           if is_integer(state.clear_time) do
-            Logger.info("Sensor state: alarm (pending clear in #{state.clear_time - now} ms).")
+            report(
+              state,
+              :alarm,
+              :pending,
+              "alarm (pending clear in #{state.clear_time - now} ms)"
+            )
           else
-            Logger.info("Sensor state: alarm.")
+            report(state, :alarm, :alarm, "alarm")
           end
 
-          :alarm
-
         [true, true] ->
-          Logger.info("Sensor state: all clear.")
-          :clear
+          report(state, :clear, :clear, "all clear")
       end
+    end
+
+    defp report(state, code, report, message) do
+      if report != state.last_report do
+        Logger.notice("Sensor status changed: #{message}.")
+      else
+        Logger.debug("Sensor status: #{message}.")
+      end
+
+      {code, %State{state | last_report: report}}
     end
   end
 
@@ -131,12 +145,14 @@ defmodule WindWatcher.Sensor do
 
   @impl true
   def handle_continue(:check, state) do
-    case State.check(state) do
+    {code, new_state} = State.check(state)
+
+    case code do
       :alarm -> rm_f!(state.file)
       :clear -> File.touch!(state.file)
     end
 
-    {:noreply, state, @interval}
+    {:noreply, new_state, @interval}
   end
 
   defp rm_f!(file) do
