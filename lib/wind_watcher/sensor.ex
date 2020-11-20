@@ -2,17 +2,16 @@ defmodule WindWatcher.Sensor do
   use GenServer
   require Logger
 
-  # Check sensor status at least once every 10 seconds.
-  # This allows you to set the `window_seconds` parameter
-  # quite low on Homebridge, for rapid response.
-  @interval 10_000
+  # Check sensor status at least once every minute.
+  @interval 60_000
 
   defmodule State do
     alias State
 
-    @enforce_keys [:file, :min_clear, :keepalive]
+    @enforce_keys [:clear_file, :alarm_file, :min_clear, :keepalive]
     defstruct(
-      file: nil,
+      clear_file: nil,
+      alarm_file: nil,
       min_clear: nil,
       keepalive: nil,
       last_time: nil,
@@ -33,7 +32,8 @@ defmodule WindWatcher.Sensor do
 
     def from_params(params) when is_map(params) do
       %State{
-        file: find(params, :file),
+        clear_file: find(params, :clear_file, nil),
+        alarm_file: find(params, :alarm_file, nil),
         min_clear: find(params, :min_clear, @default_min_clear),
         keepalive: find(params, :keepalive, @default_keepalive)
       }
@@ -120,9 +120,11 @@ defmodule WindWatcher.Sensor do
 
   @impl true
   def init(state) do
-    # Try touching the file to make sure we can write to it.
-    File.touch!(state.file)
-    File.rm!(state.file)
+    # Try touching the files to make sure we can write to it.
+    touch!(state.clear_file)
+    rm_f!(state.clear_file)
+    touch!(state.alarm_file)
+    rm_f!(state.alarm_file)
     {:ok, state, {:continue, :check}}
   end
 
@@ -148,12 +150,22 @@ defmodule WindWatcher.Sensor do
     {code, new_state} = State.check(state)
 
     case code do
-      :alarm -> rm_f!(state.file)
-      :clear -> File.touch!(state.file)
+      :alarm ->
+        rm_f!(state.clear_file)
+        touch!(state.alarm_file)
+
+      :clear ->
+        rm_f!(state.alarm_file)
+        touch!(state.clear_file)
     end
 
     {:noreply, new_state, @interval}
   end
+
+  defp touch!(nil), do: :ok
+  defp touch!(file), do: File.touch!(file)
+
+  defp rm_f!(nil), do: :ok
 
   defp rm_f!(file) do
     case File.rm(file) do
